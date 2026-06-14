@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::time::Duration;
 
 use image::{ImageBuffer, Rgba};
 use windows::Win32::Foundation::{HANDLE, HGLOBAL};
@@ -19,9 +20,21 @@ pub fn clipboard_has_dib() -> bool {
     unsafe { IsClipboardFormatAvailable(CF_DIB.0 as u32).is_ok() }
 }
 
+// The Snipping Tool can briefly re-lock the clipboard (e.g. to render extra
+// formats on close), so OpenClipboard right after a snip can fail transiently.
+fn open_clipboard_retry() -> bool {
+    for _ in 0..10 {
+        if unsafe { OpenClipboard(None) }.is_ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    false
+}
+
 pub fn grab_clipboard_bitmap() -> Option<Vec<u8>> {
     unsafe {
-        if OpenClipboard(None).is_err() {
+        if !open_clipboard_retry() {
             return None;
         }
         let hdata = match GetClipboardData(CF_DIB.0 as u32) {
@@ -116,7 +129,7 @@ pub fn set_clipboard_text(text: &str) -> bool {
         .collect();
     let byte_len = wide_text.len() * 2;
     unsafe {
-        if OpenClipboard(None).is_err() {
+        if !open_clipboard_retry() {
             return false;
         }
         let _ = EmptyClipboard();
