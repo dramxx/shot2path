@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-image = { version = "0.25.9", default-features = false, features = ["png", "ico"] }
-mslnk = "0.1"
+image = { version = "0.25.9", default-features = false, features = ["png"] }
 winreg = "0.56"
 
 [dependencies.windows]

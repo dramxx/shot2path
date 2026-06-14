@@ -30,4 +30,4 @@ A Windows system-tray utility that adds **Ctrl+PrintScreen** keybind, captures a
 cargo install --path .
 ```
 
-The binary is installed to `~\.cargo\bin\shot2path.exe`. On first launch it registers itself to run at Windows startup (can be toggled off via the tray menu) and creates a `shot2path` shortcut on the desktop.
+The binary is installed to `~\.cargo\bin\shot2path.exe`. On first launch it registers itself to run at Windows startup (can be toggled off via the tray menu).

@@ -2,7 +2,6 @@
 
 mod capture;
 mod clipboard;
-mod shortcut;
 mod startup;
 mod tray;
 mod util;
@@ -107,7 +106,6 @@ fn main() {
     };
 
     register_startup();
-    shortcut::create_desktop_shortcut();
 
     unsafe {
         let hmodule: HMODULE = GetModuleHandleW(None).unwrap_or_default();

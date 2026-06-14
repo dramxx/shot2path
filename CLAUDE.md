@@ -56,10 +56,6 @@ runtime — everything is synchronous Win32 API calls plus one spawned thread fo
   `MENU_IMAGE_BASE..` IDs.
 - **startup.rs** — manages the `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry: `register_startup`
   sets it once on first run if absent, `set_startup`/`is_startup_enabled` back the "Run at startup" tray toggle.
-- **shortcut.rs** — `create_desktop_shortcut()` (called once from `main()`, skipped if
-  `%USERPROFILE%\Desktop\shot2path.lnk` already exists) renders the tray's orange circle to
-  `%LOCALAPPDATA%\shot2path\icon.ico` via the `image` crate and creates the desktop shortcut pointing at
-  `current_exe()` with that icon, using the `mslnk` crate (pure-Rust `.lnk` writer, no COM).
 - **util.rs** — `wide()` helper for the UTF-16 string conversion required by Win32 APIs.
 
 ## Key invariant
