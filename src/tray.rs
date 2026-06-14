@@ -1,6 +1,8 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
@@ -10,11 +12,12 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, DestroyMenu, GetCursorPos, PostMessageW,
-    SetForegroundWindow, TrackPopupMenu, HICON, HMENU, MENU_ITEM_FLAGS, MF_CHECKED, MF_SEPARATOR,
-    MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_NULL,
+    SetForegroundWindow, TrackPopupMenu, HICON, HMENU, MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED,
+    MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TPM_RIGHTBUTTON, WM_APP, WM_NULL,
 };
 
-use crate::capture::FULLSCREEN;
+use crate::capture::{copy_image_path, recent_images, FULLSCREEN};
 use crate::startup::is_startup_enabled;
 use crate::util::wide;
 
@@ -24,9 +27,13 @@ pub const MENU_EXIT: u32 = 1001;
 pub const MENU_AREA: u32 = 1002;
 pub const MENU_FULLSCREEN: u32 = 1003;
 pub const MENU_STARTUP: u32 = 1004;
-pub const MENU_OPEN_IMAGE: u32 = 1005;
+pub const MENU_OPEN_FOLDER: u32 = 1005;
+pub const MENU_IMAGE_BASE: u32 = 2000;
+pub const MAX_RECENT_IMAGES: u32 = 10;
 
 pub const COLOR_ORANGE: [u8; 4] = [0xD4, 0x57, 0x0A, 0xFF];
+
+static RECENT_IMAGES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 pub fn make_circle_icon(rgba: [u8; 4]) -> HICON {
     let size: u32 = 16;
@@ -122,6 +129,26 @@ fn check_flag(checked: bool) -> MENU_ITEM_FLAGS {
     }
 }
 
+/// Turns a "YYYY-MM-DD_HHMMSS_mmm" screenshot filename into "YYYY-MM-DD HH:MM:SS".
+fn format_timestamp_label(path: &Path) -> String {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let mut parts = stem.split('_');
+    let date = parts.next().unwrap_or(stem);
+    match parts.next() {
+        Some(time) if time.len() == 6 => {
+            format!("{} {}:{}:{}", date, &time[0..2], &time[2..4], &time[4..6])
+        }
+        _ => stem.to_string(),
+    }
+}
+
+pub fn copy_recent_image_path(id: u32) {
+    let index = (id - MENU_IMAGE_BASE) as usize;
+    if let Some(path) = RECENT_IMAGES.lock().unwrap().get(index) {
+        copy_image_path(path);
+    }
+}
+
 pub fn show_tray_menu(hwnd: HWND) {
     unsafe {
         let nii = NOTIFYICONIDENTIFIER {
@@ -165,7 +192,34 @@ pub fn show_tray_menu(hwnd: HWND) {
             MENU_STARTUP,
             "Run at startup",
         );
-        append_item(menu, MF_STRING, MENU_OPEN_IMAGE, "Open image");
+        append_separator(menu);
+
+        let images = recent_images(MAX_RECENT_IMAGES as usize);
+        if images.is_empty() {
+            append_item(menu, MF_STRING | MF_GRAYED, MENU_IMAGE_BASE, "Copy Image Path");
+        } else {
+            let Ok(submenu) = CreatePopupMenu() else {
+                return;
+            };
+            for (i, path) in images.iter().enumerate() {
+                append_item(
+                    submenu,
+                    MF_STRING,
+                    MENU_IMAGE_BASE + i as u32,
+                    &format_timestamp_label(path),
+                );
+            }
+            let label = wide("Copy Image Path");
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING | MF_POPUP,
+                submenu.0 as usize,
+                PCWSTR(label.as_ptr()),
+            );
+        }
+        *RECENT_IMAGES.lock().unwrap() = images;
+
+        append_item(menu, MF_STRING, MENU_OPEN_FOLDER, "Open images folder");
         append_separator(menu);
         append_item(menu, MF_STRING, MENU_EXIT, "Exit");
 

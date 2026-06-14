@@ -2,6 +2,7 @@
 
 mod capture;
 mod clipboard;
+mod shortcut;
 mod startup;
 mod tray;
 mod util;
@@ -24,11 +25,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 
-use crate::capture::{copy_last_path, open_last_image, start_capture, FULLSCREEN};
+use crate::capture::{copy_last_path, open_images_folder, start_capture, FULLSCREEN};
 use crate::startup::{is_startup_enabled, register_startup, set_startup};
 use crate::tray::{
-    add_tray_icon, make_circle_icon, remove_tray_icon, show_tray_menu, COLOR_ORANGE, MENU_AREA,
-    MENU_EXIT, MENU_FULLSCREEN, MENU_OPEN_IMAGE, MENU_STARTUP, WM_TRAYICON,
+    add_tray_icon, copy_recent_image_path, make_circle_icon, remove_tray_icon, show_tray_menu,
+    COLOR_ORANGE, MAX_RECENT_IMAGES, MENU_AREA, MENU_EXIT, MENU_FULLSCREEN, MENU_IMAGE_BASE,
+    MENU_OPEN_FOLDER, MENU_STARTUP, WM_TRAYICON,
 };
 use crate::util::wide;
 
@@ -71,8 +73,11 @@ unsafe extern "system" fn wnd_proc(
                 MENU_STARTUP => {
                     set_startup(!is_startup_enabled());
                 }
-                MENU_OPEN_IMAGE => {
-                    open_last_image();
+                MENU_OPEN_FOLDER => {
+                    open_images_folder();
+                }
+                id if (MENU_IMAGE_BASE..MENU_IMAGE_BASE + MAX_RECENT_IMAGES).contains(&id) => {
+                    copy_recent_image_path(id);
                 }
                 _ => {}
             }
@@ -102,6 +107,7 @@ fn main() {
     };
 
     register_startup();
+    shortcut::create_desktop_shortcut();
 
     unsafe {
         let hmodule: HMODULE = GetModuleHandleW(None).unwrap_or_default();

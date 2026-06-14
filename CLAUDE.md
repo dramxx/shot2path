@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project overview
 
 shot2path is a Windows system-tray utility (no console window — `windows_subsystem = "windows"`) that captures
-screenshots, saves them to a fixed path (`%TEMP%\cshot_latest.png`), and copies that path to the clipboard. See
-README.md for the user-facing feature list (hotkey, tray menu, etc.).
+screenshots, saves each one as a timestamped PNG under `%USERPROFILE%\Pictures\shot2path\`, and copies its path
+to the clipboard. See README.md for the user-facing feature list (hotkey, tray menu, etc.).
 
 ## Commands
 
@@ -26,27 +26,43 @@ runtime — everything is synchronous Win32 API calls plus one spawned thread fo
   registers the `Ctrl+PrintScreen` hotkey, creates the hidden window/tray icon, and dispatches messages in
   `wnd_proc`:
   - `WM_HOTKEY` → `capture::start_capture()`
-  - `WM_TRAYICON` → left-click copies the last screenshot path, right-click opens the tray menu
-  - `WM_COMMAND` → tray menu actions (switch area/fullscreen mode, toggle startup, open last image, exit)
-- **capture.rs** — capture logic and the fixed output path (`image_path()` always returns
-  `%TEMP%\cshot_latest.png`).
-  - `FULLSCREEN` (`AtomicBool`) selects area vs. fullscreen capture; `CAPTURING` (`AtomicBool`) prevents
-    overlapping captures.
+  - `WM_TRAYICON` → left-click copies the most recent screenshot's path, right-click opens the tray menu
+  - `WM_COMMAND` → tray menu actions (switch area/fullscreen mode, toggle startup, open images
+    folder/recent image, exit)
+- **capture.rs** — capture logic and image storage under `images_dir()`
+  (`%USERPROFILE%\Pictures\shot2path\`).
+  - `FULLSCREEN` (`AtomicBool`) selects area vs. fullscreen capture. `CAPTURE_GEN` (`AtomicU64`) is a
+    generation counter: each `start_capture()` call bumps it, and `capture_area()`'s poll loop bails out
+    as soon as it's no longer the latest generation — so a fresh Ctrl+PrintScreen always supersedes a
+    stuck/cancelled snip instead of waiting out the 10s timeout.
+  - Every capture is written to a new file named from the current local time
+    (`new_image_path()` → `YYYY-MM-DD_HHMMSS_mmm.png` via `GetLocalTime`), never overwritten.
+  - `recent_images(n)` lists the `n` most recent screenshots (newest first) by sorting filenames
+    descending — the timestamp format is lexicographically sortable.
   - Area capture launches the Snipping Tool via the `ms-screenclip:` URI, then polls the clipboard sequence
     number (10s timeout) until a new `CF_DIB` appears.
   - Fullscreen capture uses GDI `BitBlt`/`GetDIBits` across the full virtual screen (all monitors).
-  - `start_capture()` runs the whole flow on a spawned thread with its own `CoInitializeEx`
-    (apartment-threaded), since the Snipping Tool/clipboard interaction needs COM.
+  - `start_capture()` runs the whole flow (`capture_flow`) on a spawned thread with its own
+    `CoInitializeEx` (apartment-threaded), since the Snipping Tool/clipboard interaction needs COM.
 - **clipboard.rs** — low-level clipboard interop: reads `CF_DIB` and manually parses the `BITMAPINFOHEADER`
   (handles 24/32-bit depths, top-down/bottom-up rows, `BI_BITFIELDS` masks) into an RGBA buffer, encodes it to
-  PNG via the `image` crate, and writes `CF_UNICODETEXT` when copying paths to the clipboard.
+  PNG via the `image` crate, and writes `CF_UNICODETEXT` when copying paths to the clipboard. `OpenClipboard`
+  calls retry briefly (`open_clipboard_retry()`) since the Snipping Tool can transiently hold the clipboard.
 - **tray.rs** — builds the tray icon (a solid circle rendered at runtime via `CreateIcon`, color
   `COLOR_ORANGE`) and the right-click context menu (checkmarks reflect `FULLSCREEN` mode and startup state).
+  "Copy Image Path" is a native flyout submenu (`MF_POPUP`) listing up to `MAX_RECENT_IMAGES` recent
+  screenshots by timestamp; the path for each submenu item is cached in `RECENT_IMAGES` when the menu is
+  built, and copied to the clipboard via `copy_recent_image_path(id)` when `WM_COMMAND` fires for one of the
+  `MENU_IMAGE_BASE..` IDs.
 - **startup.rs** — manages the `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry: `register_startup`
   sets it once on first run if absent, `set_startup`/`is_startup_enabled` back the "Run at startup" tray toggle.
+- **shortcut.rs** — `create_desktop_shortcut()` (called once from `main()`, skipped if
+  `%USERPROFILE%\Desktop\shot2path.lnk` already exists) renders the tray's orange circle to
+  `%LOCALAPPDATA%\shot2path\icon.ico` via the `image` crate and creates the desktop shortcut pointing at
+  `current_exe()` with that icon, using the `mslnk` crate (pure-Rust `.lnk` writer, no COM).
 - **util.rs** — `wide()` helper for the UTF-16 string conversion required by Win32 APIs.
 
 ## Key invariant
 
-The output path is always `%TEMP%\cshot_latest.png` (`capture::image_path()`) — this fixed, predictable path is
-the whole point of the tool (consumers paste the path copied to the clipboard).
+Screenshots accumulate (one PNG per capture, never overwritten) under `capture::images_dir()`
+(`%USERPROFILE%\Pictures\shot2path\`), named by capture timestamp. Nothing currently prunes old screenshots.

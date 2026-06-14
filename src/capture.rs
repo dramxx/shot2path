@@ -1,5 +1,5 @@
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
@@ -8,8 +8,8 @@ use windows::Win32::Graphics::Gdi::{
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
     SRCCOPY,
 };
-use windows::Win32::Storage::FileSystem::GetTempPathW;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
@@ -22,38 +22,66 @@ use crate::clipboard::{
 use crate::util::wide;
 
 pub static FULLSCREEN: AtomicBool = AtomicBool::new(false);
-static CAPTURING: AtomicBool = AtomicBool::new(false);
+static CAPTURE_GEN: AtomicU64 = AtomicU64::new(0);
 
-pub fn image_path() -> PathBuf {
-    let mut buf = [0u16; 260];
-    unsafe {
-        GetTempPathW(Some(&mut buf));
-    }
-    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    let path = String::from_utf16_lossy(&buf[..len]);
-    PathBuf::from(path).join("cshot_latest.png")
+pub fn images_dir() -> PathBuf {
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    PathBuf::from(home).join("Pictures").join("shot2path")
+}
+
+fn timestamp_string() -> String {
+    let st = unsafe { GetLocalTime() };
+    format!(
+        "{:04}-{:02}-{:02}_{:02}{:02}{:02}_{:03}",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds
+    )
+}
+
+fn new_image_path() -> PathBuf {
+    let dir = images_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(format!("{}.png", timestamp_string()))
+}
+
+/// Returns up to `max` screenshots from `images_dir()`, most recent first.
+pub fn recent_images(max: usize) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(images_dir())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("png"))
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    entries.truncate(max);
+    entries
 }
 
 pub fn copy_last_path() {
-    let path = image_path();
-    if !path.exists() {
-        return;
+    if let Some(path) = recent_images(1).into_iter().next() {
+        copy_image_path(&path);
     }
+}
+
+pub fn copy_image_path(path: &Path) {
     let _ = set_clipboard_text(&path.to_string_lossy());
 }
 
-pub fn open_last_image() {
-    let path = image_path();
-    if !path.exists() {
-        return;
-    }
-    let wpath = wide(&path.to_string_lossy());
+pub fn open_images_folder() {
+    let dir = images_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    shell_open(&dir.to_string_lossy());
+}
+
+fn shell_open(target: &str) {
+    let wtarget = wide(target);
     let verb = wide("open");
     unsafe {
         ShellExecuteW(
             None,
             PCWSTR(verb.as_ptr()),
-            PCWSTR(wpath.as_ptr()),
+            PCWSTR(wtarget.as_ptr()),
             None,
             None,
             SW_SHOW,
@@ -62,30 +90,19 @@ pub fn open_last_image() {
 }
 
 fn launch_snipping_tool() {
-    let verb = wide("open");
-    let url = wide("ms-screenclip:");
-    unsafe {
-        ShellExecuteW(
-            None,
-            PCWSTR(verb.as_ptr()),
-            PCWSTR(url.as_ptr()),
-            None,
-            None,
-            SW_SHOW,
-        );
-    }
+    shell_open("ms-screenclip:");
 }
 
-fn capture_flow() {
+fn capture_flow(gen: u64) {
     if FULLSCREEN.load(Ordering::Relaxed) {
         capture_fullscreen();
     } else {
-        capture_area();
+        capture_area(gen);
     }
 }
 
 fn save_and_copy(png: &[u8]) {
-    let out_path = image_path();
+    let out_path = new_image_path();
     if std::fs::write(&out_path, png).is_err() {
         return;
     }
@@ -93,13 +110,13 @@ fn save_and_copy(png: &[u8]) {
     let _ = set_clipboard_text(&path_str);
 }
 
-fn capture_area() {
+fn capture_area(gen: u64) {
     let seq_before = clipboard_seq();
     launch_snipping_tool();
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if Instant::now() > deadline {
+        if CAPTURE_GEN.load(Ordering::SeqCst) != gen || Instant::now() > deadline {
             return;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -108,20 +125,15 @@ fn capture_area() {
         }
     }
 
-    let png = match grab_clipboard_bitmap() {
-        Some(b) => b,
-        None => return,
-    };
-
-    save_and_copy(&png);
+    if let Some(png) = grab_clipboard_bitmap() {
+        save_and_copy(&png);
+    }
 }
 
 fn capture_fullscreen() {
-    let png = match capture_fullscreen_png() {
-        Some(b) => b,
-        None => return,
-    };
-    save_and_copy(&png);
+    if let Some(png) = capture_fullscreen_png() {
+        save_and_copy(&png);
+    }
 }
 
 fn capture_fullscreen_png() -> Option<Vec<u8>> {
@@ -183,20 +195,14 @@ fn capture_fullscreen_png() -> Option<Vec<u8>> {
 }
 
 pub fn start_capture() {
-    if CAPTURING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return;
-    }
-    std::thread::spawn(|| {
+    let gen = CAPTURE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         }
-        capture_flow();
+        capture_flow(gen);
         unsafe {
             CoUninitialize();
         }
-        CAPTURING.store(false, Ordering::SeqCst);
     });
 }
